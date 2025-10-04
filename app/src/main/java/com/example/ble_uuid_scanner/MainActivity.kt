@@ -42,7 +42,12 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.example.ble_uuid_scanner.ui.theme.BLE_UUID_SCANNERTheme
 
+/**
+ * The main and only activity in this application. It sets up the UI and serves as the
+ * entry point for user interaction.
+ */
 class MainActivity : ComponentActivity() {
+    // Lazily initializes the MainViewModel, which will be scoped to this Activity.
     private val viewModel: MainViewModel by viewModels()
 
     // Define a companion object for the logging tag.
@@ -51,14 +56,16 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // Add a log message at the absolute start of the Activity's lifecycle.
-        // If this message doesn't appear, there is a fundamental issue with the app launching or Logcat settings.
+        // Log the creation of the Activity for debugging purposes.
         Log.d(TAG, "onCreate: Activity is being created.")
 
         super.onCreate(savedInstanceState)
+        // Set the content of the Activity to be the Jetpack Compose UI.
         setContent {
             BLE_UUID_SCANNERTheme {
+                // A Surface container using the 'background' color from the theme.
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    // The main composable that holds the entire screen's UI.
                     MainScreen(viewModel)
                 }
             }
@@ -66,36 +73,48 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/**
+ * The main screen composable, which observes the ViewModel's state and coordinates
+ * permission requests and UI updates.
+ */
 @Composable
 fun MainScreen(viewModel: MainViewModel) {
+    // Collect the UI state from the ViewModel as a Compose state.
+    // This ensures that the UI recomposes whenever the state changes.
     val uiState by viewModel.uiState.collectAsState()
 
-    // Define the permissions required for Bluetooth functionality based on the Android version.
+    // Define the list of required Bluetooth permissions based on the Android API level.
     val bluetoothPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        // For Android 12 (S) and above, new permissions are required.
         remember { listOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT) }
     } else {
+        // For older versions, different permissions are needed.
         remember {
             listOf(
                 Manifest.permission.BLUETOOTH,
-                // BLUETOOTH_ADMIN is no longer required for LE scanning and can be removed.
                 Manifest.permission.ACCESS_FINE_LOCATION
             )
         }
     }
 
+    // Create a launcher for the permission request.
+    // The result of the request is passed to the ViewModel.
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
         onResult = { permissions ->
+            // Inform the ViewModel whether all permissions were granted.
             viewModel.onPermissionsResult(permissions.values.all { it })
         }
     )
 
+    // A LaunchedEffect that runs once when the composable enters the composition.
+    // It triggers the permission request.
     LaunchedEffect(Unit) {
-        // This log helps confirm if the composable's LaunchedEffect is being executed.
         Log.d("MainActivity", "LaunchedEffect: Requesting permissions.")
         permissionLauncher.launch(bluetoothPermissions.toTypedArray())
     }
 
+    // The main layout composable that arranges the UI elements.
     MainScreenLayout(
         hasPermissions = uiState.hasPermissions,
         isScanning = uiState.isScanning,
@@ -108,10 +127,12 @@ fun MainScreen(viewModel: MainViewModel) {
     )
 }
 
-// Suppress the MissingPermission lint warning.
-// The linter doesn't know that we only call this composable with scan results
-// after ensuring that the necessary permissions have been granted by the user.
-// The call to `result.device.name` requires the BLUETOOTH_CONNECT permission on API 31+.
+/**
+ * A stateless composable that displays the main UI of the app.
+ * It receives all the necessary data and callbacks as parameters.
+ */
+// Suppress the MissingPermission lint warning. The linter doesn't know that we only call
+// this composable after ensuring permissions are granted.
 @SuppressLint("MissingPermission")
 @Composable
 fun MainScreenLayout(
@@ -129,11 +150,13 @@ fun MainScreenLayout(
             .fillMaxSize()
             .padding(16.dp)
     ) {
+        // A LazyColumn is used to efficiently display a potentially long list of devices.
         LazyColumn(
             modifier = Modifier
                 .padding(top = 30.dp)
-                .weight(1f) // Takes up all available space, pushing the button to the bottom
+                .weight(1f) // This makes the list take up all available vertical space.
         ) {
+            // If no devices are found and not currently scanning, show a message.
             if (availableDevices.isEmpty() && !isScanning) {
                 item {
                     val message = if (filterConnectable) "No connectable devices found" else "No devices found"
@@ -147,26 +170,30 @@ fun MainScreenLayout(
                     )
                 }
             } else {
+                // Display each discovered device as an item in the list.
                 items(availableDevices) { result ->
+                    // Determine if the device is connectable (only available on Android O and above).
                     val isConnectable = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                         result.isConnectable
                     } else {
-                        // Assume connectable if it's in the list (ViewModel has already filtered)
-                        true
+                        true // Assume connectable on older APIs.
                     }
 
-                    // Extract the 16-bit service IDs and look up their names.
+                    // Extract the 16-bit service IDs from the full UUIDs and look up their names.
                     val serviceUuidsString = result.scanRecord?.serviceUuids?.joinToString(", ") { parcelUuid ->
                         val uuidString = parcelUuid.uuid.toString().uppercase()
+                        // Standard Bluetooth Base UUID format is 0000XXXX-0000-1000-8000-00805F9B34FB
                         if (uuidString.endsWith("-0000-1000-8000-00805F9B34FB")) {
                             val serviceId = uuidString.substring(4, 8)
-                            BleServiceUuids.getServiceName(serviceId)
+                            BleServiceUuids.getServiceName(serviceId) // Look up the human-readable name.
                         } else {
-                            uuidString
+                            uuidString // Show the full UUID for non-standard services.
                         }
-                    } ?: "N/A"
+                    } ?: "N/A" // Display "N/A" if no service UUIDs are present.
 
+                    // Display the device information in a Text composable.
                     Text(
+                        // Using a multiline string for readability.
                         text = """
                             Address: ${result.device.address}
                             Name: ${result.device.name ?: "N/A"}
@@ -182,22 +209,24 @@ fun MainScreenLayout(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Create a Row for the button and checkbox
+        // A Row to layout the Scan button and the filter checkbox horizontally.
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Change the button color to red when scanning is in progress.
             val buttonColors = if (isScanning) {
                 ButtonDefaults.buttonColors(containerColor = Color.Red)
             } else {
                 ButtonDefaults.buttonColors()
             }
 
+            // The main button to start or stop the scan.
             Button(
                 onClick = onScanClick,
-                modifier = Modifier.weight(1f), // Button takes up proportional space
-                enabled = hasPermissions,
+                modifier = Modifier.weight(1f), // The button takes up proportional space.
+                enabled = hasPermissions, // The button is disabled if permissions are not granted.
                 colors = buttonColors
             ) {
                 Text(if (isScanning) "Stop Scanning" else "Scan")
@@ -205,15 +234,15 @@ fun MainScreenLayout(
 
             Spacer(modifier = Modifier.width(16.dp))
 
-            // Checkbox for filtering connectable devices
+            // A Row for the "Filter Connectable" checkbox and its label.
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.weight(1f) // Checkbox part takes up proportional space
+                modifier = Modifier.weight(1f)
             ) {
                 Checkbox(
                     checked = filterConnectable,
                     onCheckedChange = onFilterConnectableChanged,
-                    enabled = !isScanning // Disable checkbox while scanning
+                    enabled = !isScanning // Disable the checkbox while scanning.
                 )
                 Text("Filter Connectable")
             }
@@ -221,20 +250,24 @@ fun MainScreenLayout(
 
         Spacer(modifier = Modifier.height(8.dp))
 
+        // Determine the color for the status message based on its type.
         val statusColor = when (statusType) {
             StatusType.ERROR -> MaterialTheme.colorScheme.error
             else -> MaterialTheme.colorScheme.onBackground
         }
 
+        // Display the current status message at the bottom of the screen.
         Text(
             text = statusMessage,
             style = MaterialTheme.typography.bodyLarge,
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(),
-            color = statusColor // Apply the color
+            color = statusColor
         )
     }
 }
+
+// --- Previews for Jetpack Compose --- //
 
 @Preview(showBackground = true)
 @Composable
