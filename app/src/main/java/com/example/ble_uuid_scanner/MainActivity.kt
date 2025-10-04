@@ -2,6 +2,7 @@ package com.example.ble_uuid_scanner
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.bluetooth.le.ScanRecord
 import android.bluetooth.le.ScanResult
 import android.os.Build
 import android.os.Bundle
@@ -11,16 +12,20 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -29,6 +34,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
@@ -94,8 +100,10 @@ fun MainScreen(viewModel: MainViewModel) {
         hasPermissions = uiState.hasPermissions,
         isScanning = uiState.isScanning,
         statusMessage = uiState.statusMessage,
-        statusType = uiState.statusType, // Pass status type for coloring
+        statusType = uiState.statusType,
         availableDevices = uiState.availableDevices,
+        filterConnectable = uiState.filterConnectable,
+        onFilterConnectableChanged = { viewModel.onFilterConnectableChanged(it) },
         onScanClick = { viewModel.onScanClick() }
     )
 }
@@ -112,6 +120,8 @@ fun MainScreenLayout(
     statusMessage: String,
     statusType: StatusType?,
     availableDevices: List<ScanResult>,
+    filterConnectable: Boolean,
+    onFilterConnectableChanged: (Boolean) -> Unit,
     onScanClick: () -> Unit
 ) {
     Column(
@@ -124,13 +134,11 @@ fun MainScreenLayout(
                 .padding(top = 30.dp)
                 .weight(1f) // Takes up all available space, pushing the button to the bottom
         ) {
-            // If the list of available devices is empty and scanning is not in progress,
-            // a message is displayed to the user. This provides feedback when no devices
-            // are found after a scan or on initial screen load.
             if (availableDevices.isEmpty() && !isScanning) {
                 item {
+                    val message = if (filterConnectable) "No connectable devices found" else "No devices found"
                     Text(
-                        text = "No devices found",
+                        text = message,
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(16.dp),
@@ -140,8 +148,31 @@ fun MainScreenLayout(
                 }
             } else {
                 items(availableDevices) { result ->
+                    val isConnectable = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        result.isConnectable
+                    } else {
+                        // Assume connectable if it's in the list (ViewModel has already filtered)
+                        true
+                    }
+
+                    // Extract the 16-bit service IDs and look up their names.
+                    val serviceUuidsString = result.scanRecord?.serviceUuids?.joinToString(", ") { parcelUuid ->
+                        val uuidString = parcelUuid.uuid.toString().uppercase()
+                        if (uuidString.endsWith("-0000-1000-8000-00805F9B34FB")) {
+                            val serviceId = uuidString.substring(4, 8)
+                            BleServiceUuids.getServiceName(serviceId)
+                        } else {
+                            uuidString
+                        }
+                    } ?: "N/A"
+
                     Text(
-                        text = "Address: ${result.device.address}\nName: ${result.device.name ?: "N/A"}\nService UUIDs: ${result.scanRecord?.serviceUuids?.joinToString(", ") ?: "N/A"}",
+                        text = """
+                            Address: ${result.device.address}
+                            Name: ${result.device.name ?: "N/A"}
+                            Service UUIDs: $serviceUuidsString
+                            Connectable: $isConnectable
+                        """.trimIndent(),
                         modifier = Modifier.padding(8.dp)
                     )
                 }
@@ -150,24 +181,45 @@ fun MainScreenLayout(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        val buttonColors = if (isScanning) {
-            ButtonDefaults.buttonColors(containerColor = Color.Red)
-        } else {
-            ButtonDefaults.buttonColors()
+        // Create a Row for the button and checkbox
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val buttonColors = if (isScanning) {
+                ButtonDefaults.buttonColors(containerColor = Color.Red)
+            } else {
+                ButtonDefaults.buttonColors()
+            }
+
+            Button(
+                onClick = onScanClick,
+                modifier = Modifier.weight(1f), // Button takes up proportional space
+                enabled = hasPermissions,
+                colors = buttonColors
+            ) {
+                Text(if (isScanning) "Stop Scanning" else "Scan")
+            }
+
+            Spacer(modifier = Modifier.width(16.dp))
+
+            // Checkbox for filtering connectable devices
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f) // Checkbox part takes up proportional space
+            ) {
+                Checkbox(
+                    checked = filterConnectable,
+                    onCheckedChange = onFilterConnectableChanged,
+                    enabled = !isScanning // Disable checkbox while scanning
+                )
+                Text("Filter Connectable")
+            }
         }
 
-        Button(
-            onClick = onScanClick,
-            modifier = Modifier
-                .fillMaxWidth(),
-            enabled = hasPermissions,
-            colors = buttonColors
-        ) {
-            Text(if (isScanning) "Stop Scanning" else "Scan")
-        }
         Spacer(modifier = Modifier.height(8.dp))
 
-        // *** FIX: Color the status message text based on the status type. ***
         val statusColor = when (statusType) {
             StatusType.ERROR -> MaterialTheme.colorScheme.error
             else -> MaterialTheme.colorScheme.onBackground
@@ -193,6 +245,8 @@ fun MainScreenPreview() {
             statusMessage = "Ready to Scan",
             statusType = null,
             availableDevices = emptyList(),
+            filterConnectable = true,
+            onFilterConnectableChanged = {},
             onScanClick = {}
         )
     }
@@ -208,6 +262,8 @@ fun MainScreenScanningPreview() {
             statusMessage = "Scanning...",
             statusType = null,
             availableDevices = emptyList(),
+            filterConnectable = true,
+            onFilterConnectableChanged = {},
             onScanClick = {}
         )
     }
@@ -223,6 +279,8 @@ fun MainScreenNoPermissionPreview() {
             statusMessage = "Permissions Denied. Cannot scan.",
             statusType = StatusType.ERROR,
             availableDevices = emptyList(),
+            filterConnectable = true,
+            onFilterConnectableChanged = {},
             onScanClick = {}
         )
     }

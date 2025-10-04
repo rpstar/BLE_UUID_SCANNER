@@ -1,6 +1,7 @@
 package com.example.ble_uuid_scanner
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Application
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
@@ -9,7 +10,6 @@ import android.bluetooth.le.ScanCallback.SCAN_FAILED_ALREADY_STARTED
 import android.bluetooth.le.ScanCallback.SCAN_FAILED_APPLICATION_REGISTRATION_FAILED
 import android.bluetooth.le.ScanCallback.SCAN_FAILED_FEATURE_UNSUPPORTED
 import android.bluetooth.le.ScanCallback.SCAN_FAILED_INTERNAL_ERROR
-import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
@@ -59,15 +59,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.value = _uiState.value.copy(hasPermissions = hasPermissions)
     }
 
+    /**
+     * Handles the change in the 'Filter Connectable' checkbox state.
+     */
+    fun onFilterConnectableChanged(isChecked: Boolean) {
+        _uiState.value = _uiState.value.copy(filterConnectable = isChecked)
+    }
+
     // Callback for scan results.
+    @SuppressLint("MissingPermission") // Permissions are checked in startScanning() before this is used.
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
-            // Log every time this callback is hit to confirm the scan is active.
             Log.d(TAG, "onScanResult received. Result is ${if (result == null) "null" else "not null"}")
-            result?.let {
-                Log.i(TAG, "Device found: Name: ${it.device.name ?: "N/A"}, Address: ${it.device.address}")
-                // Add or update the device in the map. The UI is updated periodically.
-                discoveredDevices[it.device.address] = it
+            result?.let { scanResult ->
+                // If the filter is off, add all devices. If it's on, only add connectable devices.
+                if (!_uiState.value.filterConnectable) {
+                    Log.i(TAG, "Device added (filter off): Name: ${scanResult.device.name ?: "N/A"}, Address: ${scanResult.device.address}")
+                    discoveredDevices[scanResult.device.address] = scanResult
+                } else {
+                    val isDeviceConnectable = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        scanResult.isConnectable
+                    } else {
+                        // On older APIs, we can't reliably know. Assume connectable.
+                        true
+                    }
+
+                    if (isDeviceConnectable) {
+                        Log.i(TAG, "Connectable device added: Name: ${scanResult.device.name ?: "N/A"}, Address: ${scanResult.device.address}")
+                        discoveredDevices[scanResult.device.address] = scanResult
+                    } else {
+                        Log.d(TAG, "Ignoring non-connectable device due to filter: Address: ${scanResult.device.address}")
+                    }
+                }
             }
         }
 
@@ -85,11 +108,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 statusType = StatusType.ERROR,
                 isScanning = false
             )
-            // *** FIX: Cancel the coroutine early to prevent the 'finally' block from overriding the error message. ***
             stopScanning()
         }
     }
 
+    @SuppressLint("MissingPermission") // Permissions are checked before this is called
     fun startScanning() {
         Log.d(TAG, "Attempting to start scan...")
         if (bluetoothLeScanner == null) {
@@ -109,10 +132,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        val requiredPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Manifest.permission.BLUETOOTH_SCAN else Manifest.permission.ACCESS_FINE_LOCATION
-        if (ContextCompat.checkSelfPermission(getApplication(), requiredPermission) != PackageManager.PERMISSION_GRANTED) {
-            Log.w(TAG, "$requiredPermission not granted.")
-            _uiState.value = _uiState.value.copy(statusMessage = "Scan permission not granted.", statusType = StatusType.ERROR)
+        val requiredPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            listOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.BLUETOOTH)
+        }
+
+        if (requiredPermissions.any { ContextCompat.checkSelfPermission(getApplication(), it) != PackageManager.PERMISSION_GRANTED }) {
+            Log.w(TAG, "One or more required permissions are not granted.")
+            _uiState.value = _uiState.value.copy(statusMessage = "Scan permissions not granted.", statusType = StatusType.ERROR)
             return
         }
 
@@ -125,36 +153,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         scanJob = viewModelScope.launch {
             try {
-                // Clear previously found devices and set the initial UI state for scanning.
                 discoveredDevices.clear()
                 Log.d(TAG, "Starting BLE scan.")
                 _uiState.value = _uiState.value.copy(isScanning = true, availableDevices = emptyList(), statusMessage = "Scanning...")
 
-                // Start the actual BLE scan.
                 val scanSettings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
                 bluetoothLeScanner?.startScan(null, scanSettings, scanCallback)
                 Log.d(TAG, "bluetoothLeScanner.startScan() called.")
 
-                // This loop runs for the SCAN_PERIOD, updating the UI every second with the devices
-                // found so far. This avoids overwhelming the UI with updates from onScanResult.
                 val scanDurationMillis = SCAN_PERIOD
                 var elapsedTime = 0L
                 while (elapsedTime < scanDurationMillis) {
-                    delay(1000L) // Wait for a second
+                    delay(1000L)
                     elapsedTime += 1000L
                     _uiState.value = _uiState.value.copy(availableDevices = discoveredDevices.values.toList())
                 }
 
             } finally {
-                // *** FIX: Check for an existing error state before overriding the status message. ***
                 Log.d(TAG, "Scan job 'finally' block reached. Stopping scan.")
                 bluetoothLeScanner?.stopScan(scanCallback)
 
                 val currentState = _uiState.value
                 val finalMessage = when {
-                    // If the job was cancelled by onScanFailed, keep the error message.
                     currentState.statusType == StatusType.ERROR -> currentState.statusMessage
-                    // If the job was cancelled manually by the user.
                     scanJob?.isCancelled == true -> "Scan stopped."
                     discoveredDevices.isEmpty() -> "Scan complete. No devices found."
                     else -> "Scan complete."
@@ -198,5 +219,7 @@ data class MainUiState(
     val statusMessage: String = "Permissions not yet checked.",
     val statusType: StatusType? = null,
     val isScanning: Boolean = false,
-    val availableDevices: List<ScanResult> = emptyList()
+    val availableDevices: List<ScanResult> = emptyList(),
+    // Add a flag to control the connectable filter, defaulting to true.
+    val filterConnectable: Boolean = true
 )
