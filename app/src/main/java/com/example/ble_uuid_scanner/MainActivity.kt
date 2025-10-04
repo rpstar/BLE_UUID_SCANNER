@@ -170,6 +170,7 @@ fun MainScreenLayout(
                         text = """
                             Address: ${result.device.address}
                             Name: ${result.device.name ?: "N/A"}
+                            RSSI: ${result.rssi}
                             Service UUIDs: $serviceUuidsString
                             Connectable: $isConnectable
                         """.trimIndent(),

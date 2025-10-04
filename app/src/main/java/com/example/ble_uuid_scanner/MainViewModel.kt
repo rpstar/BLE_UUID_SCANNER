@@ -166,7 +166,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 while (elapsedTime < scanDurationMillis) {
                     delay(1000L)
                     elapsedTime += 1000L
-                    _uiState.value = _uiState.value.copy(availableDevices = discoveredDevices.values.toList())
+                    _uiState.value = _uiState.value.copy(availableDevices = discoveredDevices.values.sortedByDescending { it.rssi })
                 }
 
             } finally {
@@ -184,7 +184,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.value = currentState.copy(
                     isScanning = false,
                     statusMessage = finalMessage,
-                    availableDevices = discoveredDevices.values.toList()
+                    availableDevices = discoveredDevices.values.sortedByDescending { it.rssi }
                 )
             }
         }
